@@ -59,7 +59,7 @@ copyright[] = "Copyright(c) 2020 Igor Sikuljak <igorsikuljak@ieee.org>";
 
 #ifndef DEBUG
 # define NDEBUG
-static const int debug = 0;
+static const int debug = 1;
 #else
 static const int debug = 1;
 #endif
@@ -118,7 +118,7 @@ typedef int gid_t;
 typedef int uid_t;
 typedef int pid_t;
 typedef unsigned long in_addr_t;
-typedef long long ssize_t;
+typedef long int ssize_t;
 
 #define close(fd) _close(fd)
 #define open(path, mode) _open(path, mode)
@@ -135,7 +135,7 @@ int vasprintf(char** strp, const char* format, va_list ap)
     char* str = (char*)malloc((size_t)len + 1);
     if (!str)
         return -1;
-    int retval = vsnprintf(str, len + 1, format, ap);
+    int retval = vsnprintf(str, (size_t) len + 1, format, ap);
     if (retval == -1) {
         free(str);
         return -1;
@@ -549,7 +549,6 @@ static void nonblock_socket(const int sock) {
     //flags |= O_NONBLOCK;
     //if (fcntl(sock, F_SETFL, flags) == -1)
     //    err(1, "fcntl() to set O_NONBLOCK");
-    /* all sockets in win are blocking*/
     u_long nonblocking_enabled = TRUE;
     int flags = ioctlsocket(sock, FIONBIO, &nonblocking_enabled);
 
@@ -892,7 +891,7 @@ static void init_sockin(void) {
     /* reuse address */
     sockopt = 1;
     if (setsockopt(sockin, SOL_SOCKET, SO_REUSEADDR,
-        &sockopt, sizeof(sockopt)) == -1)
+        (char*) &sockopt, sizeof(sockopt)) == -1)
         err(1, "setsockopt(SO_REUSEADDR)");
 
 #if 0
@@ -2016,7 +2015,7 @@ static void process_get(struct connection* conn) {
     /* open file */
     /*conn->reply_fd = open(target, O_RDONLY | O_NONBLOCK);*/
     // lets pray for this, win does not have non blockking supported in open()
-    conn->reply_fd = open(target, O_RDONLY);
+    conn->reply_fd = open(target, _O_BINARY | _O_RDONLY);
     free(target);
 
     if (conn->reply_fd == -1) {
@@ -2204,7 +2203,11 @@ static void process_request(struct connection* conn) {
 
 /* Receiving request. */
 static void poll_recv_request(struct connection* conn) {
-    char buf[1 << 15];
+    char * buf = (char*)malloc(1 << 15);
+    if (buf == NULL) {
+        printf("Out of memory!");
+        exit(-1);
+    }
     ssize_t recvd;
 
     assert(conn->state == RECV_REQUEST);
@@ -2216,6 +2219,7 @@ static void poll_recv_request(struct connection* conn) {
         if (recvd == -1) {
             if (errno == EAGAIN) {
                 if (debug) printf("poll_recv_request would have blocked\n");
+                free(buf);
                 return;
             }
             if (debug) printf("recv(%d) error: %s\n",
@@ -2223,6 +2227,7 @@ static void poll_recv_request(struct connection* conn) {
         }
         conn->conn_close = 1;
         conn->state = DONE;
+        free(buf);
         return;
     }
     conn->last_active = now;
@@ -2256,6 +2261,7 @@ static void poll_recv_request(struct connection* conn) {
      */
     if (conn->state == SEND_HEADER)
         poll_send_header(conn);
+    free(buf);
 }
 
 /* Sending header.  Assumes conn->header is not NULL. */
@@ -2340,28 +2346,38 @@ static ssize_t send_from_file(const int s, const int fd,
 # ifndef min
 #  define min(a,b) ( ((a)<(b)) ? (a) : (b) )
 # endif
-    char buf[1 << 15];
+    char * buf = (char*)malloc(1 << 15);
+    if (buf == NULL) {
+        printf("Out of memory!");
+        exit(-1);
+    }
     size_t amount = min(sizeof(buf), size);
     ssize_t numread;
 
     if (lseek(fd, ofs, SEEK_SET) == -1)
         err(1, "fseek(%d)", (int)ofs);
-    numread = read(fd, buf, amount); // on win, in text files \r\n is replaced with \n, therefore amount is no longer relevant
+        numread = read(fd, buf, amount);
     if (numread == 0) {
         fprintf(stderr, "premature eof on fd %d\n", fd);
+        free(buf);
         return -1;
     }
     else if (numread == -1) {
         fprintf(stderr, "error reading on fd %d: %s", fd, strerror(errno));
+        free(buf);
         return -1;
     }
-    //else if ((size_t)numread != amount) {
-    //    fprintf(stderr, "read %zd bytes, expecting %zu bytes on fd %d\n",
-    //        numread, amount, fd);
-    //    return -1;
-    //}
-    else
-        return send(s, buf, numread, 0); // see the read() line comment above (amount => numread)
+    else if ((size_t)numread != amount) {
+        fprintf(stderr, "read %zd bytes, expecting %zu bytes on fd %d\n",
+            numread, amount, fd);
+        return -1;
+    }
+    else {
+        int ret = send(s, buf, amount, 0); 
+        free(buf);
+        printf("sending %d bytes", ret);
+        return ret;
+    }
 #endif
 #endif
 }
@@ -2384,7 +2400,7 @@ static void poll_send_reply(struct connection* conn)
         assert(conn->reply_length >= conn->reply_sent);
         sent = send_from_file(conn->socket, conn->reply_fd,
             conn->reply_start + conn->reply_sent,
-            (size_t)(conn->reply_length - conn->reply_sent));
+            (size_t) conn->reply_length - conn->reply_sent);
         if (debug && (sent < 1))
             printf("send_from_file returned %lld (errno=%d %s)\n",
                 (long long)sent, errno, strerror(errno));
@@ -2432,7 +2448,7 @@ static void httpd_poll(void) {
     int max_fd, select_ret;
     struct connection* conn, * next;
     int bother_with_timeout = 0;
-    struct timeval timeout, t0, t1;
+    struct timeval timeout;// , t0, t1;
 
     timeout.tv_sec = timeout_secs;
     timeout.tv_usec = 0;
