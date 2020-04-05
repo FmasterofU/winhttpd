@@ -2211,7 +2211,7 @@ static void poll_recv_request(struct connection* conn) {
     ssize_t recvd;
 
     assert(conn->state == RECV_REQUEST);
-    recvd = recv(conn->socket, buf, sizeof(buf), 0);
+    recvd = recv(conn->socket, buf, 1 << 15, 0);
     if (debug)
         printf("poll_recv_request(%d) got %d bytes\n",
             conn->socket, (int)recvd);
@@ -2351,12 +2351,12 @@ static ssize_t send_from_file(const int s, const int fd,
         printf("Out of memory!");
         exit(-1);
     }
-    size_t amount = min(sizeof(buf), size);
+    size_t amount = min(1 << 15, size);
     ssize_t numread;
 
     if (lseek(fd, ofs, SEEK_SET) == -1)
         err(1, "fseek(%d)", (int)ofs);
-        numread = read(fd, buf, amount);
+    numread = read(fd, buf, amount);
     if (numread == 0) {
         fprintf(stderr, "premature eof on fd %d\n", fd);
         free(buf);
