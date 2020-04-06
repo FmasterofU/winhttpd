@@ -1946,6 +1946,44 @@ static void process_get(struct connection* conn) {
     /* work out path of file being requested */
     decoded_url = urldecode(conn->url);
 
+    // create a windows type equivalent for decoded_url
+    int iter, du_len = strlen(decoded_url);
+    char* decoded_url_win = xmalloc(du_len + 2);
+    for (iter = 0; iter < du_len; iter++)
+        if (decoded_url[iter] == '/')
+            decoded_url_win[iter] = '\\';
+        else decoded_url_win[iter] = decoded_url[iter];
+    decoded_url_win[du_len] = '\0';
+    if (decoded_url_win[du_len - 1] == '\\')
+        decoded_url_win[du_len - 1] = '\0';
+
+    struct stat path_stat;
+    xasprintf(&target, "%s%s", wwwroot, decoded_url_win);
+    stat(target, &path_stat);
+    if ((path_stat.st_mode & (_S_IFDIR | _S_IREAD)) == (_S_IFDIR | _S_IREAD)) {
+        if (decoded_url[du_len - 1] != '/') {
+            redirect(conn, "%s/", decoded_url);
+            free(decoded_url);
+            free(decoded_url_win);
+            free(target);
+            return;
+        }
+        decoded_url_win[du_len - 1] = '\\';
+        decoded_url_win[du_len] = '\0';
+    }
+    else if ((path_stat.st_mode & (_S_IFREG | _S_IREAD)) == (_S_IFREG | _S_IREAD)) {
+        if (decoded_url[du_len - 1] == '/') {
+            decoded_url[du_len - 1] = '\0';
+            redirect(conn, "%s", decoded_url);
+            free(decoded_url);
+            free(decoded_url_win);
+            free(target);
+            return;
+        }
+        decoded_url_win[du_len] = '\0';
+    }
+    free(target);
+
     /* make sure it's safe */
     if (make_safe_url(decoded_url) == NULL) {
         default_reply(conn, 400, "Bad Request",
@@ -1980,12 +2018,13 @@ static void process_get(struct connection* conn) {
     }
 
     /* does it end in a slash? serve up url/index_name */
-    if (decoded_url[strlen(decoded_url) - 1] == '/') {
-        xasprintf(&target, "%s%s%s", wwwroot, decoded_url, index_name);
+    if (decoded_url_win[strlen(decoded_url_win) - 1] == '\\') {
+        xasprintf(&target, "%s%s%s", wwwroot, decoded_url_win, index_name);
         if (!file_exists(target)) {
             free(target);
             if (no_listing) {
                 free(decoded_url);
+                free(decoded_url_win);
                 /* Return 404 instead of 403 to make --no-listing
                  * indistinguishable from the directory not existing.
                  * i.e.: Don't leak information.
@@ -1998,16 +2037,18 @@ static void process_get(struct connection* conn) {
             generate_dir_listing(conn, target);
             free(target);
             free(decoded_url);
+            free(decoded_url_win);
             return;
         }
         mimetype = url_content_type(index_name);
     }
     else {
         /* points to a file */
-        xasprintf(&target, "%s%s", wwwroot, decoded_url);
+        xasprintf(&target, "%s%s", wwwroot, decoded_url_win);
         mimetype = url_content_type(decoded_url);
     }
     free(decoded_url);
+    free(decoded_url_win);
     if (debug)
         printf("url=\"%s\", target=\"%s\", content-type=\"%s\"\n",
             conn->url, target, mimetype);
